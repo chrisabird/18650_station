@@ -27,18 +27,21 @@ double battery04Capacity = 0;
 
 Adafruit_PCD8544 display = Adafruit_PCD8544(11, 10, 9, 8, 7);
 
+double readVoltage(uint8_t voltagePin) {
+  return (supplyVoltage * analogRead(voltagePin)) / 1024;
+}
+
 void logMilliampHoursForTheLastSecond(double *capacity, uint8_t dischargePin, uint8_t currentPin, uint8_t voltagePin) {
   uint8_t isDischarging  = digitalRead(dischargePin);
   double current = (supplyVoltage * analogRead(currentPin)) / 1024;
-  double voltage = (supplyVoltage * analogRead(voltagePin)) / 1024;
-
+  double voltage = readVoltage(voltagePin);
   if(isDischarging) {
     *capacity += current * 0.000277777777778;
   }
 }
 
 void protectFromOverDischarge(uint8_t dischargePin, uint8_t voltagePin) {
-  double voltage = (supplyVoltage * analogRead(voltagePin)) / 1024;
+  double voltage = readVoltage(voltagePin);
   if(voltage <= 3.0) {
     digitalWrite(dischargePin, LOW); 
   }
@@ -62,7 +65,7 @@ void setupDisplay() {
 
 
 void updateDisplayLine(uint8_t battery, uint8_t dischargePin, uint8_t voltagePin, double *capacity) {
-  double voltage = (supplyVoltage * analogRead(voltagePin)) / 1024;
+  double voltage = readVoltage(voltagePin);
   display.print(battery);
   display.print(digitalRead(dischargePin) > 0 ? "D" : "-");
   display.print(" ");
@@ -91,7 +94,6 @@ void setup() {
   setupDischargePin(battery03DischagePin);
   setupDischargePin(battery04DischagePin);  
   setupDisplay();
-  //analogReference(EXTERNAL);
   pinMode(buttonPin, INPUT_PULLUP); 
   delay(2000);
 }
