@@ -2,4 +2,6 @@
 
 This is the code for an arduino controlled 18650 charge and discharge station. 
 
-
+* src/Discharger - This is a basic power resistor discharger
+* src/Discharger_v2 - This is for a continous current discharger
+* src/Discharger_v3 - This is for a combined contious current discharger and charger 
