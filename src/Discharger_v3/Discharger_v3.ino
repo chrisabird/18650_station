@@ -1,164 +1,376 @@
-#include <SPI.h>
 #include <Wire.h>
-#include <PCD8544.h>
+#include <LiquidCrystal_PCF8574.h>
 
+#define batteryArraySize 6
+#define batteriesPerSelector 6
+#define numberOfChargers 6
+#define numberOfDischargers 2
+#define numberOfSelectors 2
 #define supplyVoltage 5.0
 
-#define battery01VoltagePin A0
-#define battery02VoltagePin A1
+#define discharger01VoltagePin A1
+#define discharger02VoltagePin A0
 
-#define battery01ChargePin 2
-#define battery02ChargePin 3
+#define buttonPin 8
 
-#define battery01ChargeStatusPin 4
-#define battery02ChargeStatusPin 5
+#define MCP23017_IODIRA 0x00
+#define MCP23017_IODIRB 0x01
+#define MCP23017_GPIOA 0x12
+#define MCP23017_GPIOB 0x13
+#define MCP23017_OLATA 0x14
+#define MCP23017_OLATB 0x15
 
-#define battery01DischargerAddress 0x60
-#define battery02DischargerAddress 0x61
+#define UNUSED 255
 
-#define MCP4736_ONE_VOLT 818
-#define MCP4736_ZERO_VOLT 0
-#define MCP4726_CMD_WRITEDAC 0x40
-
-#define buttonPin 12
-
-double battery01Capacity = 0;
-double battery02Capacity = 0;
+#define DEBUG 0
 
 enum STATE {
-  IDLE,
+  WAITING_CHARGE,
   CHARGE,
-  DISCHARGE
-} ;
+  WAITING_DISCHARGE,
+  DISCHARGE,
+  DONE
+};
 
-enum STATE battery01State = IDLE;
-enum STATE battery02State = IDLE;
+enum SELECTOR {
+  CHARGER,
+  DISCHARGER
+};
 
-PCD8544 display = PCD8544(11, 10, 9, 7, 8);
+uint8_t page = 0;
+uint8_t cycleStarted = 0;
+uint8_t dischargerStatus[numberOfDischargers] = {UNUSED, UNUSED};
+uint8_t dischargerPins[numberOfDischargers] = {A0, A1};
+double batteryCapacities[batteryArraySize];
+enum STATE batteryStates[batteryArraySize];
+uint8_t chargerPins[numberOfChargers] = {2, 3, 4, 5, 6, 7};
+uint8_t selectorAddresses[numberOfSelectors] = {0x20, 0x21};
+uint8_t chargerStatus[numberOfChargers] = {UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED};
 
-void setDACVoltage(uint8_t dischargerAddress, int output) {
-  Wire.beginTransmission(dischargerAddress);
-  Wire.write(MCP4726_CMD_WRITEDAC);
-  Wire.write(output >> 4);
-  Wire.write((output & 15) << 4);
-  Wire.endTransmission();   
+
+LiquidCrystal_PCF8574 display(0x3F);
+
+uint8_t readIOExpander(uint8_t i2caddr, uint8_t addr) {
+  Wire.beginTransmission(i2caddr);
+  Wire.write(addr);
+  Wire.endTransmission();
+  Wire.requestFrom(i2caddr, 1);
+  return Wire.read();
 }
 
-void setChargeStatus(uint8_t batteryChargePin, uint8_t enabled) {
-  digitalWrite(batteryChargePin, enabled);
+void updateIOExpander(uint8_t i2caddr, uint8_t regAddr, uint8_t regValue) {
+  Wire.beginTransmission(i2caddr);
+  Wire.write(regAddr);
+  Wire.write(regValue);
+  Wire.endTransmission();
+}
+
+void updateSelector(int8_t batteryNumber, enum SELECTOR reg, uint8_t enabled) {
+  uint8_t selectorNumber = batteryNumber / batteriesPerSelector;
+  uint8_t i2caddr = selectorAddresses[selectorNumber];
+  uint8_t gpio = readIOExpander(i2caddr, (reg == CHARGER) ? MCP23017_OLATA : MCP23017_OLATB);
+  bitWrite(gpio, batteryNumber % batteriesPerSelector, enabled);
+  updateIOExpander(selectorAddresses[selectorNumber], (reg == CHARGER) ? MCP23017_GPIOA : MCP23017_GPIOB, gpio);
+}
+
+uint8_t setBatteryChargeStatus(uint8_t batteryNumber, uint8_t enabled) {
+  uint8_t chargerNumber = batteryNumber % numberOfChargers;
+  if (enabled == 1 && chargerStatus[chargerNumber] != UNUSED) {
+    return 0;
+  }
+  updateSelector(batteryNumber, CHARGER, enabled);
+  chargerStatus[chargerNumber] = (enabled == 1) ? batteryNumber : UNUSED;
+  return 1;
+}
+
+uint8_t setBatteryDischargeStatus(uint8_t batteryNumber, uint8_t enabled) {
+  uint8_t dischargerNumber = batteryNumber % numberOfDischargers;
+  if (enabled == 1 && dischargerStatus[dischargerNumber] != UNUSED) {
+    return 0;
+  }
+  updateSelector(batteryNumber, DISCHARGER, enabled);
+  dischargerStatus[dischargerNumber] = (enabled == 1) ? batteryNumber : UNUSED;
+  return 1;
+}
+
+void logMilliampHoursForTheLastSecond() {
+  for (uint8_t j = 0; j < numberOfDischargers; j++) {
+    uint8_t batteryNumber = dischargerStatus[j];
+    if(batteryNumber != UNUSED) {
+      batteryCapacities[batteryNumber] = batteryCapacities[batteryNumber] + 0.000277777777778;
+   }
+  }
 }
 
 double readVoltage(uint8_t voltagePin) {
   return (supplyVoltage * analogRead(voltagePin)) / 1024;
 }
 
-void logMilliampHoursForTheLastSecond(double *capacity, enum STATE *batteryState) {
-  if(*batteryState == DISCHARGE) {
-    *capacity += 0.000277777777778;
-  }
-}
-
-void protectFromOverDischarge(uint8_t dischargerAddress, enum STATE *batteryState, uint8_t voltagePin, uint8_t batteryChargePin) {
-  double voltage = readVoltage(voltagePin);
-  if(voltage <= 3.0) {
-    setState(dischargerAddress, batteryChargePin, batteryState, IDLE);
-  }
-}
-
-void checkForBatteryCharged(uint8_t dischargerAddress, enum STATE *batteryState, uint8_t batteryChargeStatusPin, uint8_t batteryChargePin) {
-  if(*batteryState == CHARGE) {
-    int chargeStatus  = digitalRead(batteryChargeStatusPin);
-    if(chargeStatus == 1) {
-      setState(dischargerAddress, batteryChargePin, batteryState, DISCHARGE);
+void protectFromOverDischarge() {
+  for (uint8_t j = 0; j < numberOfDischargers; j++) {
+    uint8_t batteryNumber = dischargerStatus[j];
+    if(batteryNumber != UNUSED) {
+      double voltage = readVoltage(dischargerPins[j]);
+      
+      #if defined(DEBUG)
+      Serial.print("Battery ");
+      Serial.print(batteryNumber);
+      Serial.print(" discharge voltage ");
+      Serial.println(voltage);
+      #endif
+      
+      if (voltage <= 3.0) {
+        setState(batteryNumber, DONE);
+      }
     }
   }
 }
 
+void checkForBatteryCharged() {
+  for (uint8_t j = 0; j < numberOfChargers; j++) {
+    uint8_t batteryNumber = chargerStatus[j];
+    if(batteryNumber != UNUSED) {
+      int chargeStatus = digitalRead(chargerPins[j]);
+      
+      #if defined(DEBUG)
+      Serial.print("Battery ");
+      Serial.print(batteryNumber);
+      Serial.print(" charge status ");
+      Serial.println(chargeStatus);
+      #endif
+      
+      if (chargeStatus == 1) {
+        setState(batteryNumber, WAITING_DISCHARGE);
+      }
+    }
+  }
+}
 
-void setState(uint8_t dischargerAddress, uint8_t batteryChargePin, enum STATE *batteryState, enum STATE newState) {
-  *batteryState = newState;
-  switch(newState) {
-    case IDLE: 
-      setChargeStatus(batteryChargePin, 0);
-      setDACVoltage(dischargerAddress, MCP4736_ZERO_VOLT);
+void checkForFreeChargers() {
+  uint8_t i;
+  for (uint8_t i = 0; i < batteryArraySize; i++ ) {
+    if(batteryStates[i] == WAITING_CHARGE) {
+      setState(i, CHARGE);  
+    }
+  }
+}
+
+void checkForFreeDischargers() {
+  uint8_t i;
+  for (uint8_t i = 0; i < batteryArraySize; i++ ) {
+    if(batteryStates[i] == WAITING_DISCHARGE) {
+      setState(i, DISCHARGE);  
+    }
+  }
+}
+
+void checkForDone() {
+  uint8_t i;
+  bool done = true;
+  for (uint8_t i = 0; i < batteryArraySize; i++ ) {
+    if(batteryStates[i] != DONE) {
+        done = false;
+    }
+  }
+  cycleStarted = done ? 0 : 1;
+}
+
+void setState(uint8_t batteryNumber, enum STATE newState) {
+  switch (newState) {
+    case WAITING_CHARGE:
+      batteryStates[batteryNumber] = newState;
+      setBatteryChargeStatus(batteryNumber, 0);
+      setBatteryDischargeStatus(batteryNumber, 0);
+      #if defined(DEBUG)
+      Serial.print("Battery ");
+      Serial.print(batteryNumber);
+      Serial.println(" being waiting on charge ");
+      #endif
       break;
-   case CHARGE:
-      setDACVoltage(dischargerAddress, MCP4736_ZERO_VOLT);
-      setChargeStatus(batteryChargePin, 1);
+    case CHARGE:    
+      setBatteryDischargeStatus(batteryNumber, 0);
+      if(setBatteryChargeStatus(batteryNumber, 1) == 1) {
+        batteryStates[batteryNumber] = newState;  
+        #if defined(DEBUG)
+        Serial.print("Battery ");
+        Serial.print(batteryNumber);
+        Serial.println(" being charged ");
+        #endif
+      }
       break;
-   case DISCHARGE:
-      setChargeStatus(batteryChargePin, 0);
-      setDACVoltage(dischargerAddress, MCP4736_ONE_VOLT);      
-      break;   
-   default: 
-      setDACVoltage(dischargerAddress, MCP4736_ZERO_VOLT);
-      setChargeStatus(batteryChargePin, 0);
+    case WAITING_DISCHARGE:
+      batteryStates[batteryNumber] = newState;
+      setBatteryChargeStatus(batteryNumber, 0);
+      setBatteryDischargeStatus(batteryNumber, 0);
+      #if defined(DEBUG)
+      Serial.print("Battery ");
+      Serial.print(batteryNumber);
+      Serial.println(" being waiting on discharge ");
+      #endif
+      break;
+    case DISCHARGE:
+      setBatteryChargeStatus(batteryNumber, 0);
+      if(setBatteryDischargeStatus(batteryNumber, 1) == 1) {
+        batteryStates[batteryNumber] = newState;
+        #if defined(DEBUG)
+        Serial.print("Battery ");
+        Serial.print(batteryNumber);
+        Serial.println(" being discharged ");
+        #endif
+      } 
+      break;
+    default:
+      batteryStates[batteryNumber] = newState;
+      setBatteryDischargeStatus(batteryNumber, 0);
+      setBatteryChargeStatus(batteryNumber, 0);
+      #if defined(DEBUG)
+      Serial.print("Battery ");
+      Serial.print(batteryNumber+1);
+      Serial.println(" being done ");
+      #endif
       break;
   }
 }
 
-void setupDisplay() {
-  display.begin(84, 48);
-  display.setCursor(0,0);
-  display.print("18650 Tester");
-}
-
-void updateDisplayLine(uint8_t battery, enum STATE *batteryState, uint8_t voltagePin, double *capacity) {
-  double voltage = readVoltage(voltagePin);
-  display.print(battery);
-  switch(*batteryState) {
-    case IDLE: display.print("I"); break;
-    case CHARGE: display.print("C"); break;
-    case DISCHARGE: display.print("D"); break;
+void updateDisplayLine(uint8_t batteryNumber) {
+  if (batteryNumber < 10) {
+    display.print("0");
   }
-  display.print(" ");
-  display.print((int)(*capacity * 1000));
-  display.print(" ");
-  display.print(voltage);
+  display.print(batteryNumber);
+  switch (batteryStates[batteryNumber]) {
+    case WAITING_CHARGE:
+    case WAITING_DISCHARGE:
+      display.print("W ");
+      break;
+    case CHARGE:
+      display.print("C");
+      break;
+    case DISCHARGE:
+      display.print("D ");
+      display.print((int)(batteryCapacities[batteryNumber] * 1000));
+      break;
+    case DONE:
+      display.print("F ");
+      display.print((int)(batteryCapacities[batteryNumber] * 1000));
+      break;
+  }
 }
 
 void updateDisplay() {
-  display.setCursor(0,0);
-  display.println("18650 Tester");
-  display.setCursor(0,1);
-  updateDisplayLine(1, &battery01State, battery01VoltagePin, &battery01Capacity);
-  display.setCursor(0,2);
-  updateDisplayLine(2, &battery02State, battery02VoltagePin, &battery02Capacity);
+  uint8_t i, j;
+  uint8_t startBattery = page * batteriesPerSelector;
+  uint8_t endBattery = startBattery + batteriesPerSelector;
+
+  for (uint8_t j = startBattery; j < endBattery; j++ ) {
+    display.setCursor(j > (startBattery + 2) ? 9 : 0, j % 3);
+    updateDisplayLine(j);
+  }
+  display.setCursor(18, 4);
+  display.print("P");
+  display.print(page);
+
+  if (endBattery == batteryArraySize) {
+    page = 0;
+  } else {
+    page++;
+  }
 }
 
-void setup() {
-  Wire.begin();
-  setState(battery01DischargerAddress, battery01ChargePin, &battery01State, IDLE);
-  setState(battery02DischargerAddress, battery02ChargePin, &battery02State, IDLE);
-  setupDisplay();
-  pinMode(buttonPin, INPUT_PULLUP); 
-  pinMode(battery01ChargeStatusPin, INPUT_PULLUP);
-  pinMode(battery02ChargeStatusPin, INPUT_PULLUP);
-  pinMode(battery01ChargePin, OUTPUT);
-  pinMode(battery02ChargePin, OUTPUT);
-  delay(2000);
+void voltageCheck() {
+  for (uint8_t j = 0; j < batteryArraySize; j++ ) {
+    updateSelector(j, DISCHARGER, 1);
+    delay(100);
+    Serial.print(j);
+    Serial.print(" ");
+    Serial.print(readVoltage(discharger01VoltagePin));
+    Serial.print(" ");
+    Serial.println(readVoltage(discharger02VoltagePin));
+    updateSelector(j, DISCHARGER, 0);
+  }
 }
 
 void loop() {
 
-  logMilliampHoursForTheLastSecond(&battery01Capacity, &battery01State);
-  logMilliampHoursForTheLastSecond(&battery02Capacity, &battery02State);
-
-  checkForBatteryCharged(battery01DischargerAddress, &battery01State, battery01ChargeStatusPin, battery01ChargePin);
-  checkForBatteryCharged(battery02DischargerAddress, &battery02State, battery02ChargeStatusPin, battery02ChargePin);
-
-  protectFromOverDischarge(battery01DischargerAddress, &battery01State, battery01VoltagePin, battery01ChargePin);
-  protectFromOverDischarge(battery02DischargerAddress, &battery02State, battery02VoltagePin, battery02ChargePin);
+  if(cycleStarted == 1) {
+    logMilliampHoursForTheLastSecond();
+    checkForBatteryCharged();
+    protectFromOverDischarge();
+    checkForFreeChargers();
+    checkForFreeDischargers();
+    checkForDone();
+  }
 
   uint8_t buttonStatus = digitalRead(buttonPin);
-  if(buttonStatus == 0) {
-    setState(battery01DischargerAddress, battery01ChargePin, &battery01State, CHARGE);
-    setState(battery02DischargerAddress, battery02ChargePin, &battery02State, CHARGE); 
-    updateDisplay();
-    delay(9000);
-  } else {
-    updateDisplay();  
+
+  #if defined(DEBUG)
+  if (Serial.available() > 0) {
+    char in = Serial.read();
+    if(in == 'g') {
+      buttonStatus = 0; 
+    }
+    if(in == 't') {
+      voltageCheck();
+    }
   }
+  #endif
   
+  if (buttonStatus == 0) {
+    cycleStarted = 1;
+    checkForFreeChargers();
+    updateDisplay();
+    delay(500);
+  } else {
+    updateDisplay();
+  }
+
   delay(1000);
 }
+
+void setupDisplay() {
+  display.begin(20, 4);
+  display.setBacklight(255);
+}
+
+void setupSelectors() {
+  uint8_t i;
+  for (uint8_t i = 0; i < (batteryArraySize / batteriesPerSelector); i++ ) {
+    updateIOExpander(selectorAddresses[i], MCP23017_IODIRA, 0x00);
+    updateIOExpander(selectorAddresses[i], MCP23017_GPIOA, 0x00);
+    updateIOExpander(selectorAddresses[i], MCP23017_IODIRB, 0x00);
+    updateIOExpander(selectorAddresses[i], MCP23017_GPIOB, 0x00);
+  }
+}
+
+void setupDefaultState() {
+  uint8_t i;
+  for (uint8_t i = 0; i < batteryArraySize; i++ ) {
+    setState(i, WAITING_CHARGE);
+    batteryCapacities[i] = 0;
+  }
+}
+
+void setupButtonIOPins() {
+  pinMode(buttonPin, INPUT_PULLUP);
+}
+
+void setupChargeIOPins() {
+  for (uint8_t i = 0; i < numberOfChargers; i++ ) {
+    pinMode(chargerPins[i], INPUT_PULLUP);
+  }
+}
+
+void setup() {
+  #if defined(DEBUG)
+  Serial.begin(9600);
+  Serial.println("Discharge Station in Debug Mode");
+  #endif
+  
+  Wire.begin();
+  setupDisplay();
+  setupSelectors();
+  setupDefaultState();
+  setupButtonIOPins();
+  setupChargeIOPins();
+}
+
+
