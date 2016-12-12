@@ -8,9 +8,6 @@
 #define numberOfSelectors 2
 #define supplyVoltage 5.0
 
-#define discharger01VoltagePin A1
-#define discharger02VoltagePin A0
-
 #define buttonPin 8
 
 #define MCP23017_IODIRA 0x00
@@ -282,9 +279,9 @@ void voltageCheck() {
     delay(100);
     Serial.print(j);
     Serial.print(" ");
-    Serial.print(readVoltage(discharger01VoltagePin));
+    Serial.print(readVoltage(A0));
     Serial.print(" ");
-    Serial.println(readVoltage(discharger02VoltagePin));
+    Serial.println(readVoltage(A1));
     updateSelector(j, DISCHARGER, 0);
   }
 }
