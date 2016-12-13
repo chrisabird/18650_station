@@ -3,6 +3,7 @@
 
 #define batteryArraySize 6
 #define batteriesPerSelector 6
+#define batteriesPerPage 6
 #define numberOfChargers 6
 #define numberOfDischargers 2
 #define numberOfSelectors 2
@@ -100,7 +101,18 @@ void logMilliampHoursForTheLastSecond() {
 }
 
 double readVoltage(uint8_t voltagePin) {
-  return (supplyVoltage * analogRead(voltagePin)) / 1024;
+  double reading = 0;
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  reading += analogRead(voltagePin);
+  return (supplyVoltage * (reading / 10)) / 1024;
 }
 
 void protectFromOverDischarge() {
@@ -112,6 +124,8 @@ void protectFromOverDischarge() {
       #if defined(DEBUG)
       Serial.print("Battery ");
       Serial.print(batteryNumber);
+      Serial.print(" analog port ");
+      Serial.print(dischargerPins[j]);
       Serial.print(" discharge voltage ");
       Serial.println(voltage);
       #endif
@@ -128,13 +142,6 @@ void checkForBatteryCharged() {
     uint8_t batteryNumber = chargerStatus[j];
     if(batteryNumber != UNUSED) {
       int chargeStatus = digitalRead(chargerPins[j]);
-      
-      #if defined(DEBUG)
-      Serial.print("Battery ");
-      Serial.print(batteryNumber);
-      Serial.print(" charge status ");
-      Serial.println(chargeStatus);
-      #endif
       
       if (chargeStatus == 1) {
         setState(batteryNumber, WAITING_DISCHARGE);
@@ -230,6 +237,7 @@ void setState(uint8_t batteryNumber, enum STATE newState) {
 }
 
 void updateDisplayLine(uint8_t batteryNumber) {
+  uint8_t dischargerNumber = batteryNumber % numberOfDischargers;
   if (batteryNumber < 10) {
     display.print("0");
   }
@@ -245,6 +253,8 @@ void updateDisplayLine(uint8_t batteryNumber) {
     case DISCHARGE:
       display.print("D ");
       display.print((int)(batteryCapacities[batteryNumber] * 1000));
+      display.print(" ");
+      //display.print(readVoltage(dischargerNumber));
       break;
     case DONE:
       display.print("F ");
@@ -255,8 +265,8 @@ void updateDisplayLine(uint8_t batteryNumber) {
 
 void updateDisplay() {
   uint8_t i, j;
-  uint8_t startBattery = page * batteriesPerSelector;
-  uint8_t endBattery = startBattery + batteriesPerSelector;
+  uint8_t startBattery = page * batteriesPerPage;
+  uint8_t endBattery = startBattery + batteriesPerPage;
 
   for (uint8_t j = startBattery; j < endBattery; j++ ) {
     display.setCursor(j > (startBattery + 2) ? 9 : 0, j % 3);
@@ -356,6 +366,11 @@ void setupChargeIOPins() {
   }
 }
 
+void setupDischardIOPins() {
+   pinMode(A0, INPUT);
+   pinMode(A1, INPUT);
+}
+
 void setup() {
   #if defined(DEBUG)
   Serial.begin(9600);
@@ -368,6 +383,7 @@ void setup() {
   setupDefaultState();
   setupButtonIOPins();
   setupChargeIOPins();
+  setupDischardIOPins();
 }
 
 
