@@ -121,15 +121,6 @@ void protectFromOverDischarge() {
     if(batteryNumber != UNUSED) {
       double voltage = readVoltage(dischargerPins[j]);
       
-      #if defined(DEBUG)
-      Serial.print("Battery ");
-      Serial.print(batteryNumber);
-      Serial.print(" analog port ");
-      Serial.print(dischargerPins[j]);
-      Serial.print(" discharge voltage ");
-      Serial.println(voltage);
-      #endif
-      
       if (voltage <= 3.0) {
         setState(batteryNumber, DONE);
       }
@@ -183,55 +174,24 @@ void setState(uint8_t batteryNumber, enum STATE newState) {
   switch (newState) {
     case WAITING_CHARGE:
       batteryStates[batteryNumber] = newState;
-      setBatteryChargeStatus(batteryNumber, 0);
-      setBatteryDischargeStatus(batteryNumber, 0);
-      #if defined(DEBUG)
-      Serial.print("Battery ");
-      Serial.print(batteryNumber);
-      Serial.println(" being waiting on charge ");
-      #endif
       break;
     case CHARGE:    
-      setBatteryDischargeStatus(batteryNumber, 0);
       if(setBatteryChargeStatus(batteryNumber, 1) == 1) {
         batteryStates[batteryNumber] = newState;  
-        #if defined(DEBUG)
-        Serial.print("Battery ");
-        Serial.print(batteryNumber);
-        Serial.println(" being charged ");
-        #endif
       }
       break;
     case WAITING_DISCHARGE:
       batteryStates[batteryNumber] = newState;
       setBatteryChargeStatus(batteryNumber, 0);
-      setBatteryDischargeStatus(batteryNumber, 0);
-      #if defined(DEBUG)
-      Serial.print("Battery ");
-      Serial.print(batteryNumber);
-      Serial.println(" being waiting on discharge ");
-      #endif
       break;
     case DISCHARGE:
-      setBatteryChargeStatus(batteryNumber, 0);
       if(setBatteryDischargeStatus(batteryNumber, 1) == 1) {
         batteryStates[batteryNumber] = newState;
-        #if defined(DEBUG)
-        Serial.print("Battery ");
-        Serial.print(batteryNumber);
-        Serial.println(" being discharged ");
-        #endif
       } 
       break;
     default:
       batteryStates[batteryNumber] = newState;
       setBatteryDischargeStatus(batteryNumber, 0);
-      setBatteryChargeStatus(batteryNumber, 0);
-      #if defined(DEBUG)
-      Serial.print("Battery ");
-      Serial.print(batteryNumber+1);
-      Serial.println(" being done ");
-      #endif
       break;
   }
 }
@@ -253,8 +213,6 @@ void updateDisplayLine(uint8_t batteryNumber) {
     case DISCHARGE:
       display.print("D ");
       display.print((int)(batteryCapacities[batteryNumber] * 1000));
-      display.print(" ");
-      //display.print(readVoltage(dischargerNumber));
       break;
     case DONE:
       display.print("F ");
@@ -283,18 +241,109 @@ void updateDisplay() {
   }
 }
 
-void voltageCheck() {
-  for (uint8_t j = 0; j < batteryArraySize; j++ ) {
-    updateSelector(j, DISCHARGER, 1);
-    delay(100);
-    Serial.print(j);
-    Serial.print(" ");
-    Serial.print(readVoltage(A0));
-    Serial.print(" ");
-    Serial.println(readVoltage(A1));
-    updateSelector(j, DISCHARGER, 0);
+#if defined(DEBUG)
+void debugOuput() {
+  Serial.println("");
+  Serial.println("----------------");
+  Serial.println("| Debug Output |");
+  Serial.println("----------------");
+  Serial.println("");
+  Serial.println("Dischargers");
+  Serial.println("----------------");
+  Serial.println("| id | battery |"); 
+  Serial.println("----------------");
+  for (uint8_t j = 0; j < numberOfDischargers; j++ ) {
+      Serial.print("| ");
+      Serial.print(j);
+      Serial.print("  | ");
+      if(dischargerStatus[j] == UNUSED) {
+        Serial.println("UNUSED  |");
+      } else {
+        Serial.print(dischargerStatus[j]);
+        Serial.println("      |");
+      }
   }
+  Serial.println("----------------");
+  Serial.println("");
+
+  Serial.println("Chargers");
+  Serial.println("----------------");
+  Serial.println("| id | battery |"); 
+  Serial.println("----------------");
+  for (uint8_t j = 0; j < numberOfChargers; j++ ) {
+    Serial.print("| ");
+    Serial.print(j);
+    Serial.print("  | ");
+    if(chargerStatus[j] == UNUSED) {
+      Serial.println("UNUSED |");
+    } else {
+      Serial.print(chargerStatus[j]);
+      Serial.println("      |");
+    }
+  }
+  Serial.println("----------------");
+  Serial.println("");
+
+  Serial.println("Battery Charging");
+  Serial.println("------------");
+  Serial.println("| id | y/n |"); 
+  Serial.println("------------");
+  byte chargerSelectorStatus = readIOExpander(selectorAddresses[0], MCP23017_OLATA);
+  for (byte i=0; i<8; i++) {
+    byte state = bitRead(chargerSelectorStatus, i);
+    Serial.print("| ");
+    Serial.print(i);
+    Serial.print("  | ");
+    if(state == 1) {
+      Serial.println("yes |");
+    } else {
+      Serial.println("no  |");
+    }
+  }
+  Serial.println("------------");
+  Serial.println("");
+  
+  Serial.println("Discharger Selector Status:");
+  Serial.println("Battery Discharging");
+  Serial.println("------------");
+  Serial.println("| id | y/n |"); 
+  Serial.println("------------");
+  byte dischargerSelectorStatus = readIOExpander(selectorAddresses[0], MCP23017_OLATB);
+    for (byte i=0; i<8; i++) {
+    byte state = bitRead(dischargerSelectorStatus, i);
+    Serial.print("| ");
+    Serial.print(i);
+    Serial.print("  | ");
+    if(state == 1) {
+      Serial.println("yes |");
+    } else {
+      Serial.println("no  |");
+    }
+  }
+  Serial.println("------------");
+  Serial.println("");
+
+
+  Serial.println("Dischargers Voltages");
+  Serial.println("----------------");
+  Serial.println("| id | voltage |"); 
+  Serial.println("----------------");
+  for (uint8_t j = 0; j < numberOfDischargers; j++ ) {
+    double voltage = readVoltage(dischargerPins[j]);
+    Serial.print("| ");
+    Serial.print(j);
+    Serial.print("  | ");
+    if(dischargerStatus[j] == UNUSED) {
+      Serial.println("UNUSED  |");
+    } else {
+      Serial.print(voltage);
+      Serial.println("     |");
+    }
+  }
+  Serial.println("----------------");
+  Serial.println("");
 }
+#endif
 
 void loop() {
 
@@ -315,8 +364,8 @@ void loop() {
     if(in == 'g') {
       buttonStatus = 0; 
     }
-    if(in == 't') {
-      voltageCheck();
+    if(in == 'd') {
+      debugOuput();
     }
   }
   #endif
@@ -329,7 +378,6 @@ void loop() {
   } else {
     updateDisplay();
   }
-
   delay(1000);
 }
 
